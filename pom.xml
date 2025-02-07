@@ -1,0 +1,245 @@
+Maven Dependencies (pom.xml)
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+</dependencies>
+2. Entity: BankAccount.java
+
+Ensures data validation
+Modular structure with Lombok (@Data)
+package com.bank.model;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import lombok.Data;
+
+@Entity
+@Data
+public class BankAccount {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @NotBlank(message = "Account holder name cannot be empty")
+    private String accountHolderName;
+
+    @NotNull(message = "Initial balance is required")
+    @Min(value = 100, message = "Minimum balance should be 100")
+    private Double balance;
+}
+3. Repository: BankAccountRepository.java
+
+Follows repository pattern for better modularity
+package com.bank.repository;
+
+import com.bank.model.BankAccount;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface BankAccountRepository extends JpaRepository<BankAccount, Long> {
+}
+4. Service Layer: BankAccountService.java
+
+Ensures separation of concerns
+Handles transactions atomically
+package com.bank.service;
+
+import com.bank.exception.AccountNotFoundException;
+import com.bank.model.BankAccount;
+import com.bank.repository.BankAccountRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+
+@Service
+public class BankAccountService {
+    private final BankAccountRepository repository;
+
+    public BankAccountService(BankAccountRepository repository) {
+        this.repository = repository;
+    }
+
+    public BankAccount createAccount(BankAccount account) {
+        return repository.save(account);
+    }
+
+    public BankAccount getAccountById(Long id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new AccountNotFoundException("Account not found with ID: " + id));
+    }
+
+    public List<BankAccount> getAllAccounts() {
+        return repository.findAll();
+    }
+
+    @Transactional
+    public BankAccount deposit(Long id, Double amount) {
+        BankAccount account = getAccountById(id);
+        account.setBalance(account.getBalance() + amount);
+        return repository.save(account);
+    }
+
+    @Transactional
+    public BankAccount withdraw(Long id, Double amount) {
+        BankAccount account = getAccountById(id);
+        if (account.getBalance() < amount) {
+            throw new IllegalArgumentException("Insufficient balance");
+        }
+        account.setBalance(account.getBalance() - amount);
+        return repository.save(account);
+    }
+
+    @Transactional
+    public void transfer(Long fromId, Long toId, Double amount) {
+        BankAccount sender = getAccountById(fromId);
+        BankAccount receiver = getAccountById(toId);
+
+        if (sender.getBalance() < amount) {
+            throw new IllegalArgumentException("Insufficient balance for transfer");
+        }
+
+        sender.setBalance(sender.getBalance() - amount);
+        receiver.setBalance(receiver.getBalance() + amount);
+
+        repository.save(sender);
+        repository.save(receiver);
+    }
+}
+5. Exception Handling
+
+Custom Exception: AccountNotFoundException.java
+package com.bank.exception;
+
+public class AccountNotFoundException extends RuntimeException {
+    public AccountNotFoundException(String message) {
+        super(message);
+    }
+}
+Global Exception Handler: GlobalExceptionHandler.java
+Ensures robust error handling
+package com.bank.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.util.Map;
+
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(AccountNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public Map<String, String> handleAccountNotFoundException(AccountNotFoundException ex) {
+        return Map.of("error", ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public Map<String, String> handleIllegalArgumentException(IllegalArgumentException ex) {
+        return Map.of("error", ex.getMessage());
+    }
+}
+6. Controller Layer: BankAccountController.java
+
+Ensures clean, RESTful API design
+Validates input requests
+package com.bank.controller;
+
+import com.bank.model.BankAccount;
+import com.bank.service.BankAccountService;
+import jakarta.validation.Valid;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/accounts")
+public class BankAccountController {
+
+    private final BankAccountService service;
+
+    public BankAccountController(BankAccountService service) {
+        this.service = service;
+    }
+
+    @PostMapping("/create")
+    public ResponseEntity<BankAccount> createAccount(@Valid @RequestBody BankAccount account) {
+        return ResponseEntity.ok(service.createAccount(account));
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<BankAccount> getAccountById(@PathVariable Long id) {
+        return ResponseEntity.ok(service.getAccountById(id));
+    }
+
+    @GetMapping
+    public ResponseEntity<List<BankAccount>> getAllAccounts() {
+        return ResponseEntity.ok(service.getAllAccounts());
+    }
+
+    @PostMapping("/{id}/deposit")
+    public ResponseEntity<BankAccount> deposit(@PathVariable Long id, @RequestParam Double amount) {
+        return ResponseEntity.ok(service.deposit(id, amount));
+    }
+
+    @PostMapping("/{id}/withdraw")
+    public ResponseEntity<BankAccount> withdraw(@PathVariable Long id, @RequestParam Double amount) {
+        return ResponseEntity.ok(service.withdraw(id, amount));
+    }
+
+    @PostMapping("/transfer")
+    public ResponseEntity<String> transfer(@RequestParam Long fromId, @RequestParam Long toId, @RequestParam Double amount) {
+        service.transfer(fromId, toId, amount);
+        return ResponseEntity.ok("Transfer successful");
+    }
+}
+7. Running the Application
+
+Test API Calls in Postman or cURL
+
+✔ Create Account
+
+POST /accounts/create
+{
+    "accountHolderName": "John Doe",
+    "balance": 500.0
+}
+✔ Deposit Money
+
+POST /accounts/1/deposit?amount=200
+✔ Withdraw Money
+
+POST /accounts/1/withdraw?amount=100
+✔ Transfer Money
+
+POST /accounts/transfer?fromId=1&toId=2&amount=50
+✔ Get Account Details
+
+last dependencies for unit test 
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
